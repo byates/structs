@@ -3,6 +3,7 @@ package structs
 
 import (
 	"fmt"
+	"sync"
 
 	"reflect"
 )
@@ -92,61 +93,83 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 	}
 
 	fields := s.structFields()
+	wg := &sync.WaitGroup{}
+	mu := &sync.Mutex{}
+	workerNum := 8
+	c := make(chan reflect.StructField, 100)
+
+	for i := 0; i < workerNum; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for field := range c {
+				name := field.Name
+				val := s.value.FieldByName(name)
+				isSubStruct := false
+				var finalVal interface{}
+
+				tagName, tagOpts := parseTag(field.Tag.Get(s.TagName))
+				if tagName != "" {
+					name = tagName
+				}
+
+				// if the value is a zero value and the field is marked as omitempty do
+				// not include
+				if tagOpts.Has("omitempty") {
+					zero := reflect.Zero(val.Type()).Interface()
+					current := val.Interface()
+
+					if reflect.DeepEqual(current, zero) {
+						continue
+					}
+				}
+
+				if !tagOpts.Has("omitnested") {
+					finalVal = s.nested(val)
+
+					v := reflect.ValueOf(val.Interface())
+					if v.Kind() == reflect.Ptr {
+						v = v.Elem()
+					}
+
+					switch v.Kind() {
+					case reflect.Map, reflect.Struct:
+						isSubStruct = true
+					}
+				} else {
+					finalVal = val.Interface()
+				}
+
+				if tagOpts.Has("string") {
+					s, ok := val.Interface().(fmt.Stringer)
+					if ok {
+						mu.Lock()
+						out[name] = s.String()
+						mu.Unlock()
+					}
+					continue
+				}
+
+				if isSubStruct && (tagOpts.Has("flatten")) {
+					for k := range finalVal.(map[string]interface{}) {
+						mu.Lock()
+						out[k] = finalVal.(map[string]interface{})[k]
+						mu.Unlock()
+					}
+				} else {
+					mu.Lock()
+					out[name] = finalVal
+					mu.Unlock()
+				}
+			}
+		}()
+	}
 
 	for _, field := range fields {
-		name := field.Name
-		val := s.value.FieldByName(name)
-		isSubStruct := false
-		var finalVal interface{}
-
-		tagName, tagOpts := parseTag(field.Tag.Get(s.TagName))
-		if tagName != "" {
-			name = tagName
-		}
-
-		// if the value is a zero value and the field is marked as omitempty do
-		// not include
-		if tagOpts.Has("omitempty") {
-			zero := reflect.Zero(val.Type()).Interface()
-			current := val.Interface()
-
-			if reflect.DeepEqual(current, zero) {
-				continue
-			}
-		}
-
-		if !tagOpts.Has("omitnested") {
-			finalVal = s.nested(val)
-
-			v := reflect.ValueOf(val.Interface())
-			if v.Kind() == reflect.Ptr {
-				v = v.Elem()
-			}
-
-			switch v.Kind() {
-			case reflect.Map, reflect.Struct:
-				isSubStruct = true
-			}
-		} else {
-			finalVal = val.Interface()
-		}
-
-		if tagOpts.Has("string") {
-			s, ok := val.Interface().(fmt.Stringer)
-			if ok {
-				out[name] = s.String()
-			}
-			continue
-		}
-
-		if isSubStruct && (tagOpts.Has("flatten")) {
-			for k := range finalVal.(map[string]interface{}) {
-				out[k] = finalVal.(map[string]interface{})[k]
-			}
-		} else {
-			out[name] = finalVal
-		}
+		c <- field
 	}
+	close(c)
+	wg.Wait()
 }
 
 // Values converts the given s struct's field values to a []interface{}.  A
