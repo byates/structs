@@ -96,10 +96,10 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 	wg := &sync.WaitGroup{}
 	mu := &sync.Mutex{}
 	workerNum := 8
-	c := make(chan reflect.StructField, 100000)
+	c := make(chan reflect.StructField, len(fields))
+	wg.Add(workerNum)
 
 	for i := 0; i < workerNum; i++ {
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for field := range c {
