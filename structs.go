@@ -95,8 +95,8 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 	fields := s.structFields()
 	wg := &sync.WaitGroup{}
 	mu := &sync.Mutex{}
-	workerNum := 16
-	c := make(chan reflect.StructField, 1000)
+	workerNum := 4
+	c := make(chan reflect.StructField, 50)
 
 	for i := 0; i < workerNum; i++ {
 		wg.Add(1)
