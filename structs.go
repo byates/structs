@@ -85,6 +85,11 @@ func (s *Struct) Map() map[string]interface{} {
 	return out
 }
 
+type ni struct {
+	name  string
+	value interface{}
+}
+
 // FillMap is the same as Map. Instead of returning the output, it fills the
 // given map.
 func (s *Struct) FillMap(out map[string]interface{}) {
@@ -94,14 +99,19 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 
 	fields := s.structFields()
 	wg := &sync.WaitGroup{}
-	mu := &sync.Mutex{}
 	workerNum := 2
 	c := make(chan reflect.StructField, len(fields))
-	wg.Add(workerNum)
+	oc := make(chan ni, len(fields))
+	wg.Add(len(fields))
+
+	go func() {
+		for n := range oc {
+			out[n.name] = n.value
+		}
+	}()
 
 	for i := 0; i < workerNum; i++ {
 		go func() {
-			defer wg.Done()
 			for field := range c {
 				name := field.Name
 				val := s.value.FieldByName(name)
@@ -120,6 +130,7 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 					current := val.Interface()
 
 					if reflect.DeepEqual(current, zero) {
+						wg.Done()
 						continue
 					}
 				}
@@ -143,24 +154,23 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 				if tagOpts.Has("string") {
 					s, ok := val.Interface().(fmt.Stringer)
 					if ok {
-						mu.Lock()
-						out[name] = s.String()
-						mu.Unlock()
+						oc <- ni{name, s.String}
+						// out[name] = s.String()
 					}
+					wg.Done()
 					continue
 				}
 
 				if isSubStruct && (tagOpts.Has("flatten")) {
 					for k := range finalVal.(map[string]interface{}) {
-						mu.Lock()
-						out[k] = finalVal.(map[string]interface{})[k]
-						mu.Unlock()
+						oc <- ni{k, finalVal.(map[string]interface{})[k]}
+						// out[k] = finalVal.(map[string]interface{})[k]
 					}
 				} else {
-					mu.Lock()
-					out[name] = finalVal
-					mu.Unlock()
+					oc <- ni{name, finalVal}
+					// out[name] = finalVal
 				}
+				wg.Done()
 			}
 		}()
 	}
@@ -168,8 +178,9 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 	for _, field := range fields {
 		c <- field
 	}
-	close(c)
 	wg.Wait()
+	close(c)
+	close(oc)
 }
 
 // Values converts the given s struct's field values to a []interface{}.  A
